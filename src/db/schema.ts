@@ -25,3 +25,22 @@ export const posts = sqliteTable('posts', {
   authorId: integer('author_id').references(() => users.id),
   createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 });
+
+export const servers = sqliteTable('servers', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  subdomain: text('subdomain').unique().notNull(),
+  status: text('status', { enum: ['starting', 'running', 'stopping', 'stopped', 'error'] }).notNull().default('stopped'),
+  ram: integer('ram').notNull(), // MB
+  storage: integer('storage').notNull(), // GB
+  cpuCores: integer('cpu_cores').notNull(),
+  host: text('host').notNull(),
+  serverVersion: text('server_version').notNull(),
+  minecraftVersion: text('minecraft_version').notNull(),
+  userId: integer('user_id').references(() => users.id).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+  deletedAt: integer('deleted_at', { mode: 'timestamp' }),
+  stoppedAt: integer('stopped_at', { mode: 'timestamp' }),
+  lastActiveAt: integer('last_active_at', { mode: 'timestamp' }),
+});

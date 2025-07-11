@@ -15,6 +15,13 @@
       "when": 1752247249013,
       "tag": "0001_blushing_chameleon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1752253165277,
+      "tag": "0002_charming_tana_nile",
+      "breakpoints": true
     }
   ]
 }

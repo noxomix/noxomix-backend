@@ -53,3 +53,27 @@ export async function validateApiToken(token: string): Promise<{ userId: number 
   
   return { userId: decoded.userId };
 }
+
+export async function validateAdminToken(token: string): Promise<{ userId: number; isAdmin: boolean } | null> {
+  const decoded = verifyToken(token);
+  if (!decoded) return null;
+  
+  const apiToken = await db.select().from(apiTokens)
+    .where(eq(apiTokens.token, token))
+    .limit(1);
+  
+  if (apiToken.length === 0 || apiToken[0].expiresAt < new Date()) {
+    return null;
+  }
+  
+  // Check if user is admin
+  const user = await db.select().from(users)
+    .where(eq(users.id, decoded.userId))
+    .limit(1);
+  
+  if (user.length === 0 || user[0].role !== 'admin') {
+    return null;
+  }
+  
+  return { userId: decoded.userId, isAdmin: true };
+}

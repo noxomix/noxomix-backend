@@ -3,9 +3,9 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { bearerAuth } from 'hono/bearer-auth';
 import { db } from './db';
-import { users, posts } from './db/schema';
-import { eq } from 'drizzle-orm';
-import { hashPassword, verifyPassword, createApiToken, validateApiToken } from './auth';
+import { users, posts, servers } from './db/schema';
+import { eq, like, or, desc, asc, count } from 'drizzle-orm';
+import { hashPassword, verifyPassword, createApiToken, validateApiToken, validateAdminToken } from './auth';
 
 const app = new Hono();
 
@@ -34,6 +34,25 @@ const authMiddleware = async (c: any, next: any) => {
   }
   
   c.set('userId', validation.userId);
+  await next();
+};
+
+// Admin middleware
+const adminMiddleware = async (c: any, next: any) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const token = authHeader.substring(7);
+  const validation = await validateAdminToken(token);
+  
+  if (!validation) {
+    return c.json({ error: 'Admin access required' }, 403);
+  }
+  
+  c.set('userId', validation.userId);
+  c.set('isAdmin', validation.isAdmin);
   await next();
 };
 
@@ -160,6 +179,112 @@ app.post('/posts', async (c) => {
     return c.json(newPost[0], 201);
   } catch (error) {
     return c.json({ error: 'Failed to create post' }, 500);
+  }
+});
+
+// Admin User Management endpoint
+app.get('/api/admin/users', adminMiddleware, async (c) => {
+  try {
+    // Get query parameters with validation
+    const page = Math.max(1, parseInt(c.req.query('page') || '1'));
+    const limit = Math.min(Math.max(1, parseInt(c.req.query('limit') || '10')), 100);
+    const search = c.req.query('search')?.trim() || '';
+    const sortBy = c.req.query('sortBy') || 'createdAt';
+    const sortOrder = c.req.query('sortOrder') === 'asc' ? 'asc' : 'desc';
+    
+    // Validate sortBy parameter to prevent injection
+    const allowedSortFields = ['id', 'name', 'email', 'role', 'createdAt', 'updatedAt'];
+    const safeSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'createdAt';
+    
+    const offset = (page - 1) * limit;
+    
+    // Build search conditions
+    let whereConditions = undefined;
+    if (search) {
+      // SQL injection safe search using Drizzle ORM
+      whereConditions = or(
+        like(users.name, `%${search}%`),
+        like(users.email, `%${search}%`)
+      );
+    }
+    
+    // Get total count for pagination
+    const totalCountResult = await db
+      .select({ count: count() })
+      .from(users)
+      .where(whereConditions);
+    
+    const totalUsers = totalCountResult[0].count;
+    const totalPages = Math.ceil(totalUsers / limit);
+    
+    // Get users with pagination and sorting
+    const sortColumn = users[safeSortBy as keyof typeof users];
+    const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+    
+    const userList = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+        createdAt: users.createdAt,
+        updatedAt: users.updatedAt,
+      })
+      .from(users)
+      .where(whereConditions)
+      .orderBy(orderBy)
+      .limit(limit)
+      .offset(offset);
+    
+    return c.json({
+      users: userList,
+      pagination: {
+        page,
+        limit,
+        totalUsers,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+      search,
+      sortBy: safeSortBy,
+      sortOrder,
+    });
+  } catch (error) {
+    console.error('Error fetching users for admin:', error);
+    return c.json({ error: 'Failed to fetch users' }, 500);
+  }
+});
+
+// Server endpoints
+app.get('/api/servers', authMiddleware, async (c) => {
+  try {
+    const userId = c.get('userId');
+
+    const userServers = await db.select().from(servers).where(eq(servers.userId, userId));
+    
+    // Transform data to match frontend expectations
+    const transformedServers = userServers.map(server => ({
+      id: server.id,
+      name: `${server.subdomain}.${server.host}`,
+      status: server.status === 'running' ? 'Online' : 
+              server.status === 'stopped' ? 'Offline' : 
+              server.status === 'starting' ? 'Loading' : 'Offline',
+      cpu: server.cpuCores,
+      ram: `${server.ram}MB`,
+      storage: `${server.storage}GB`,
+      subdomain: server.subdomain,
+      host: server.host,
+      serverVersion: server.serverVersion,
+      minecraftVersion: server.minecraftVersion,
+      createdAt: server.createdAt,
+      lastActiveAt: server.lastActiveAt
+    }));
+
+    return c.json({ servers: transformedServers });
+  } catch (error) {
+    console.error('Error fetching servers:', error);
+    return c.json({ error: 'Failed to fetch servers' }, 500);
   }
 });
 

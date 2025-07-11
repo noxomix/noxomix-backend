@@ -1,5 +1,5 @@
 import { db } from './db';
-import { users } from './db/schema';
+import { users, servers } from './db/schema';
 import { hashPassword } from './auth';
 import { eq } from 'drizzle-orm';
 
@@ -8,28 +8,86 @@ async function seed() {
   
   try {
     // Check if admin user already exists
-    const existingAdmin = await db.select().from(users).where(eq(users.email, 'admin@cheapsheep.com'));
+    const existingAdmin = await db.select().from(users).where(eq(users.email, 'admin@1.1'));
     
+    let adminUser;
     if (existingAdmin.length > 0) {
       console.log('ℹ️  Admin user already exists');
-      return;
+      adminUser = existingAdmin;
+    } else {
+      // Create admin user
+      const hashedPassword = await hashPassword('123');
+      
+      adminUser = await db.insert(users).values({
+        name: 'Admin User',
+        email: 'admin@1.1',
+        password: hashedPassword,
+        role: 'admin',
+      }).returning();
+      
+      console.log('✅ Admin user created successfully:');
+      console.log('   Email: admin@1.1');
+      console.log('   Password: 123');
+      console.log('   Role: admin');
+      console.log(`   ID: ${adminUser[0].id}`);
     }
     
-    // Create admin user
-    const hashedPassword = await hashPassword('admin123');
+    // Check if servers already exist for this admin
+    const existingServers = await db.select().from(servers).where(eq(servers.userId, adminUser[0].id));
     
-    const adminUser = await db.insert(users).values({
-      name: 'Admin User',
-      email: 'admin@cheapsheep.com',
-      password: hashedPassword,
-      role: 'admin',
-    }).returning();
-    
-    console.log('✅ Admin user created successfully:');
-    console.log('   Email: admin@cheapsheep.com');
-    console.log('   Password: admin123');
-    console.log('   Role: admin');
-    console.log(`   ID: ${adminUser[0].id}`);
+    if (existingServers.length > 0) {
+      console.log('ℹ️  Servers already exist for admin user');
+    } else {
+      // Create 3 servers for admin user
+      const serverData = [
+        {
+          name: 'Test Server',
+          subdomain: 'test',
+          status: 'running' as const,
+          ram: 1024,
+          storage: 4,
+          cpuCores: 2,
+          host: 'mc-lite.com',
+          serverVersion: '1.20.4',
+          minecraftVersion: '1.20.4',
+          userId: adminUser[0].id,
+          lastActiveAt: new Date(),
+        },
+        {
+          name: 'Development Server',
+          subdomain: 'dev',
+          status: 'running' as const,
+          ram: 2048,
+          storage: 8,
+          cpuCores: 4,
+          host: 'mc-lite.com',
+          serverVersion: '1.20.4',
+          minecraftVersion: '1.20.4',
+          userId: adminUser[0].id,
+          lastActiveAt: new Date(),
+        },
+        {
+          name: 'Staging Server',
+          subdomain: 'staging',
+          status: 'stopped' as const,
+          ram: 512,
+          storage: 2,
+          cpuCores: 1,
+          host: 'mc-lite.com',
+          serverVersion: '1.20.4',
+          minecraftVersion: '1.20.4',
+          userId: adminUser[0].id,
+          stoppedAt: new Date(),
+        }
+      ];
+      
+      const createdServers = await db.insert(servers).values(serverData).returning();
+      
+      console.log('✅ 3 servers created successfully:');
+      createdServers.forEach((server, index) => {
+        console.log(`   ${index + 1}. ${server.name} (${server.subdomain}.mc-lite.com) - ${server.status}`);
+      });
+    }
     
   } catch (error) {
     console.error('❌ Error seeding database:', error);
