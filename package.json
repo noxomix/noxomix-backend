@@ -1,0 +1,33 @@
+{
+  "name": "web_backend",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/bcryptjs": "^3.0.0",
+    "@types/bun": "latest",
+    "@types/jsonwebtoken": "^9.0.10",
+    "tailwindcss": "^4.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir ./dist",
+    "migrate": "drizzle-kit migrate",
+    "fresh": "rm -f database.db && drizzle-kit migrate",
+    "generate": "drizzle-kit generate",
+    "studio": "drizzle-kit studio",
+    "seed": "bun run src/seed.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "drizzle-kit": "^0.31.4",
+    "drizzle-orm": "^0.44.2",
+    "hono": "^4.8.4",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
