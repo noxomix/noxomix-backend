@@ -47,7 +47,7 @@ async function seed() {
           ram: 1024,
           storage: 4,
           cpuCores: 2,
-          host: 'mc-lite.com',
+          host: 'craftlite.de',
           serverVersion: '1.20.4',
           minecraftVersion: '1.20.4',
           userId: adminUser[0].id,
@@ -60,7 +60,7 @@ async function seed() {
           ram: 2048,
           storage: 8,
           cpuCores: 4,
-          host: 'mc-lite.com',
+          host: 'craftlite.de',
           serverVersion: '1.20.4',
           minecraftVersion: '1.20.4',
           userId: adminUser[0].id,
@@ -73,7 +73,7 @@ async function seed() {
           ram: 512,
           storage: 2,
           cpuCores: 1,
-          host: 'mc-lite.com',
+          host: 'craftlite.de',
           serverVersion: '1.20.4',
           minecraftVersion: '1.20.4',
           userId: adminUser[0].id,
@@ -85,7 +85,7 @@ async function seed() {
       
       console.log('✅ 3 servers created successfully:');
       createdServers.forEach((server, index) => {
-        console.log(`   ${index + 1}. ${server.name} (${server.subdomain}.mc-lite.com) - ${server.status}`);
+        console.log(`   ${index + 1}. ${server.name} (${server.subdomain}.craftlite.de) - ${server.status}`);
       });
     }
     
