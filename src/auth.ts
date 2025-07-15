@@ -51,6 +51,15 @@ export async function validateApiToken(token: string): Promise<{ userId: number 
     return null;
   }
   
+  // Check if user is enabled
+  const user = await db.select().from(users)
+    .where(eq(users.id, decoded.userId))
+    .limit(1);
+  
+  if (user.length === 0 || !user[0].enabled) {
+    return null;
+  }
+  
   return { userId: decoded.userId };
 }
 
@@ -66,12 +75,12 @@ export async function validateAdminToken(token: string): Promise<{ userId: numbe
     return null;
   }
   
-  // Check if user is admin
+  // Check if user is admin and enabled
   const user = await db.select().from(users)
     .where(eq(users.id, decoded.userId))
     .limit(1);
   
-  if (user.length === 0 || user[0].role !== 'admin') {
+  if (user.length === 0 || user[0].role !== 'admin' || !user[0].enabled) {
     return null;
   }
   

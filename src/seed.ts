@@ -18,12 +18,15 @@ async function seed() {
       // Create admin user
       const hashedPassword = await hashPassword('123');
       
-      adminUser = await db.insert(users).values({
+      const result = await db.insert(users).values({
         name: 'Admin User',
         email: 'admin@1.1',
         password: hashedPassword,
         role: 'admin',
-      }).returning();
+        enabled: true,
+      });
+      
+      adminUser = await db.select().from(users).where(eq(users.email, 'admin@1.1'));
       
       console.log('✅ Admin user created successfully:');
       console.log('   Email: admin@1.1');
@@ -81,7 +84,8 @@ async function seed() {
         }
       ];
       
-      const createdServers = await db.insert(servers).values(serverData).returning();
+      await db.insert(servers).values(serverData);
+      const createdServers = await db.select().from(servers).where(eq(servers.userId, adminUser[0].id));
       
       console.log('✅ 3 servers created successfully:');
       createdServers.forEach((server, index) => {
@@ -95,11 +99,15 @@ async function seed() {
   }
 }
 
-// Run seeder
-seed().then(() => {
-  console.log('🎉 Seeding completed');
-  process.exit(0);
-}).catch((error) => {
-  console.error('❌ Seeding failed:', error);
-  process.exit(1);
-});
+// Only run if called directly (not imported)
+if (import.meta.main) {
+  seed().then(() => {
+    console.log('🎉 Seeding completed');
+    process.exit(0);
+  }).catch((error) => {
+    console.error('❌ Seeding failed:', error);
+    process.exit(1);
+  });
+}
+
+export { seed };

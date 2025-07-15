@@ -16,9 +16,9 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --outdir ./dist",
+    "build": "bun build src/index.ts --outdir ./dist --target node",
     "migrate": "drizzle-kit migrate",
-    "fresh": "rm -f database.db && drizzle-kit migrate",
+    "fresh": "bun run src/fresh.ts",
     "generate": "drizzle-kit generate",
     "studio": "drizzle-kit studio",
     "seed": "bun run src/seed.ts"
@@ -28,6 +28,7 @@
     "drizzle-kit": "^0.31.4",
     "drizzle-orm": "^0.44.2",
     "hono": "^4.8.4",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.14.2"
   }
 }

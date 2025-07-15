@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "3e278914-d05c-491d-8a3d-b3500cbfeb16",
-  "prevId": "284d5d21-260d-427e-8c96-92251b057480",
+  "id": "46dd07b3-6dc3-4d61-97f0-af994bfe864c",
+  "prevId": "152b3d1d-3443-4ca6-9385-06c15f05fb68",
   "tables": {
     "api_tokens": {
       "name": "api_tokens",
@@ -93,6 +93,13 @@
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "bunny_id": {
+          "name": "bunny_id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "enabled": {
@@ -400,6 +407,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'customer'"
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
         },
         "created_at": {
           "name": "created_at",

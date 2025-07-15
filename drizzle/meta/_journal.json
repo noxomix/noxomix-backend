@@ -1,26 +1,47 @@
 {
   "version": "7",
-  "dialect": "sqlite",
+  "dialect": "mysql",
   "entries": [
     {
       "idx": 0,
-      "version": "6",
-      "when": 1752241013538,
-      "tag": "0000_polite_magik",
+      "version": "5",
+      "when": 1752490416305,
+      "tag": "0000_natural_omega_sentinel",
       "breakpoints": true
     },
     {
       "idx": 1,
-      "version": "6",
-      "when": 1752247249013,
-      "tag": "0001_blushing_chameleon",
+      "version": "5",
+      "when": 1752500085211,
+      "tag": "0001_lying_lilandra",
       "breakpoints": true
     },
     {
       "idx": 2,
-      "version": "6",
-      "when": 1752253165277,
-      "tag": "0002_charming_tana_nile",
+      "version": "5",
+      "when": 1752501169749,
+      "tag": "0002_shocking_paladin",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1752518605997,
+      "tag": "0003_colorful_sinister_six",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1752518985857,
+      "tag": "0004_secret_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1752524521087,
+      "tag": "0005_normal_morg",
       "breakpoints": true
     }
   ]

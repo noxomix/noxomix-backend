@@ -1,0 +1,1 @@
+ALTER TABLE `users` MODIFY COLUMN `enabled` boolean NOT NULL DEFAULT false;
