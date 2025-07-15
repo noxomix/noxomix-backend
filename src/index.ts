@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { bearerAuth } from 'hono/bearer-auth';
 import { db } from './db';
-import { users, posts, servers, domains, apiTokens, subdomains } from './db/schema';
+import { users, posts, servers, domains, apiTokens, subdomains, hostsystems } from './db/schema';
 import { eq, like, or, desc, asc, count, and, ne } from 'drizzle-orm';
 import { hashPassword, verifyPassword, createApiToken, validateApiToken, validateAdminToken } from './auth';
 
@@ -136,7 +136,7 @@ app.get('/auth/me', authMiddleware, async (c) => {
 });
 
 // Protected routes
-app.get('/users', authMiddleware, async (c) => {
+app.get('/admin/users', authMiddleware, async (c) => {
   try {
     const allUsers = await db.select().from(users);
     return c.json(allUsers);
@@ -145,7 +145,7 @@ app.get('/users', authMiddleware, async (c) => {
   }
 });
 
-app.post('/users', async (c) => {
+app.post('/admin/users', async (c) => {
   try {
     const { name, email } = await c.req.json();
     const newUser = await db.insert(users).values({ name, email }).returning();
@@ -155,7 +155,7 @@ app.post('/users', async (c) => {
   }
 });
 
-app.get('/users/:id', async (c) => {
+app.get('/admin/users/:id', async (c) => {
   try {
     const id = parseInt(c.req.param('id'));
     const user = await db.select().from(users).where(eq(users.id, id));
@@ -165,6 +165,29 @@ app.get('/users/:id', async (c) => {
     return c.json(user[0]);
   } catch (error) {
     return c.json({ error: 'Failed to fetch user' }, 500);
+  }
+});
+
+app.get('/admin/users/:id/servers', authMiddleware, async (c) => {
+  try {
+    const userId = parseInt(c.req.param('id'));
+    
+    if (isNaN(userId)) {
+      return c.json({ error: 'Invalid user ID' }, 400);
+    }
+    
+    // Check if user exists
+    const user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (user.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    // Get user's servers
+    const userServers = await db.select().from(servers).where(eq(servers.userId, userId));
+    
+    return c.json(userServers);
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch user servers' }, 500);
   }
 });
 
@@ -665,8 +688,12 @@ app.get('/api/admin/domains/:domainId/subdomains', adminMiddleware, async (c) =>
     const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
     
     const subdomainList = await db
-      .select()
+      .select({
+        subdomain: subdomains,
+        hostsystem: hostsystems
+      })
       .from(subdomains)
+      .leftJoin(hostsystems, eq(subdomains.hostsystemId, hostsystems.id))
       .where(whereConditions)
       .orderBy(orderBy)
       .limit(limit)
@@ -742,6 +769,29 @@ app.post('/api/admin/domains/:domainId/subdomains', adminMiddleware, async (c) =
       }
     }
     
+    // Validate hostsystem_id if provided
+    if (body.hostsystemId !== undefined && body.hostsystemId !== null && body.hostsystemId !== '') {
+      const hostsystemId = parseInt(body.hostsystemId);
+      if (isNaN(hostsystemId) || hostsystemId < 1) {
+        return c.json({ error: 'Hostsystem ID must be a positive integer or empty' }, 400);
+      }
+      
+      // Check if hostsystem exists
+      const hostsystem = await db
+        .select()
+        .from(hostsystems)
+        .where(eq(hostsystems.id, hostsystemId))
+        .limit(1);
+      
+      if (hostsystem.length === 0) {
+        return c.json({ error: 'Hostsystem not found' }, 404);
+      }
+      
+      body.hostsystemId = hostsystemId;
+    } else {
+      body.hostsystemId = null;
+    }
+    
     // Validate record IDs if provided
     if (body.ipv4RecordId !== undefined && body.ipv4RecordId !== null && body.ipv4RecordId !== '') {
       const recordId = parseInt(body.ipv4RecordId);
@@ -777,6 +827,7 @@ app.post('/api/admin/domains/:domainId/subdomains', adminMiddleware, async (c) =
     // Create subdomain
     const [newSubdomain] = await db.insert(subdomains).values({
       domainId: domainId,
+      hostsystemId: body.hostsystemId,
       content: fullDomain.toLowerCase(),
       ipv4: body.ipv4 || null,
       ipv6: body.ipv6 || null,
@@ -858,6 +909,31 @@ app.put('/api/admin/subdomains/:id', adminMiddleware, async (c) => {
       }
     }
     
+    // Validate and update hostsystem_id if provided
+    if (body.hostsystemId !== undefined) {
+      if (body.hostsystemId !== null && body.hostsystemId !== '' && body.hostsystemId !== undefined) {
+        const hostsystemId = parseInt(body.hostsystemId);
+        if (isNaN(hostsystemId) || hostsystemId < 1) {
+          return c.json({ error: 'Hostsystem ID must be a positive integer or null' }, 400);
+        }
+        
+        // Check if hostsystem exists
+        const hostsystem = await db
+          .select()
+          .from(hostsystems)
+          .where(eq(hostsystems.id, hostsystemId))
+          .limit(1);
+        
+        if (hostsystem.length === 0) {
+          return c.json({ error: 'Hostsystem not found' }, 404);
+        }
+        
+        updateData.hostsystemId = hostsystemId;
+      } else {
+        updateData.hostsystemId = null;
+      }
+    }
+    
     // Validate and update record IDs if provided
     if (body.ipv4RecordId !== undefined) {
       if (body.ipv4RecordId !== null && body.ipv4RecordId !== '' && body.ipv4RecordId !== undefined) {
@@ -923,40 +999,6 @@ app.delete('/api/admin/subdomains/:id', adminMiddleware, async (c) => {
       return c.json({ error: 'Invalid subdomain ID' }, 400);
     }
     
-    // Check if subdomain exists
-    const existingSubdomain = await db
-      .select()
-      .from(subdomains)
-      .where(eq(subdomains.id, subdomainId))
-      .limit(1);
-    
-    if (existingSubdomain.length === 0) {
-      return c.json({ error: 'Subdomain not found' }, 404);
-    }
-    
-    // Check if subdomain is enabled
-    if (existingSubdomain[0].enabled) {
-      return c.json({ error: 'Cannot delete enabled subdomains. Please disable the subdomain first.' }, 400);
-    }
-    
-    // Delete subdomain
-    await db.delete(subdomains).where(eq(subdomains.id, subdomainId));
-    
-    return c.json({ message: 'Subdomain deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting subdomain:', error);
-    return c.json({ error: 'Failed to delete subdomain' }, 500);
-  }
-});
-
-app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
-  try {
-    const subdomainId = parseInt(c.req.param('id'));
-    
-    if (isNaN(subdomainId)) {
-      return c.json({ error: 'Invalid subdomain ID' }, 400);
-    }
-    
     // Get subdomain with domain information
     const subdomainResult = await db
       .select({
@@ -974,11 +1016,106 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
     
     const { subdomain, domain } = subdomainResult[0];
     
+    // Check if subdomain is enabled
+    if (subdomain.enabled) {
+      return c.json({ error: 'Cannot delete enabled subdomains. Please disable the subdomain first.' }, 400);
+    }
+    
+    // Delete DNS records from Bunny if they exist and domain is linked
+    if (domain.bunnyId) {
+      const bunnyAccessKey = process.env.BUNNY_API_KEY;
+      
+      if (bunnyAccessKey) {
+        // Delete IPv4 record if it exists
+        if (subdomain.ipv4RecordId) {
+          try {
+            const deleteUrl = `https://api.bunny.net/dnszone/${domain.bunnyId}/records/${subdomain.ipv4RecordId}`;
+            const deleteResponse = await fetch(deleteUrl, {
+              method: 'DELETE',
+              headers: {
+                'accept': 'application/json',
+                'AccessKey': bunnyAccessKey
+              }
+            });
+            
+            if (!deleteResponse.ok) {
+              console.error(`Failed to delete IPv4 record ${subdomain.ipv4RecordId}: ${deleteResponse.statusText}`);
+            }
+          } catch (error) {
+            console.error('Error deleting IPv4 record:', error);
+            // Continue with deletion even if DNS record deletion fails
+          }
+        }
+        
+        // Delete IPv6 record if it exists
+        if (subdomain.ipv6RecordId) {
+          try {
+            const deleteUrl = `https://api.bunny.net/dnszone/${domain.bunnyId}/records/${subdomain.ipv6RecordId}`;
+            const deleteResponse = await fetch(deleteUrl, {
+              method: 'DELETE',
+              headers: {
+                'accept': 'application/json',
+                'AccessKey': bunnyAccessKey
+              }
+            });
+            
+            if (!deleteResponse.ok) {
+              console.error(`Failed to delete IPv6 record ${subdomain.ipv6RecordId}: ${deleteResponse.statusText}`);
+            }
+          } catch (error) {
+            console.error('Error deleting IPv6 record:', error);
+            // Continue with deletion even if DNS record deletion fails
+          }
+        }
+      }
+    }
+    
+    // Delete subdomain from database
+    await db.delete(subdomains).where(eq(subdomains.id, subdomainId));
+    
+    return c.json({ message: 'Subdomain deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting subdomain:', error);
+    return c.json({ error: 'Failed to delete subdomain' }, 500);
+  }
+});
+
+app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
+  try {
+    const subdomainId = parseInt(c.req.param('id'));
+    
+    if (isNaN(subdomainId)) {
+      return c.json({ error: 'Invalid subdomain ID' }, 400);
+    }
+    
+    // Get subdomain with domain and hostsystem information
+    const subdomainResult = await db
+      .select({
+        subdomain: subdomains,
+        domain: domains,
+        hostsystem: hostsystems
+      })
+      .from(subdomains)
+      .innerJoin(domains, eq(subdomains.domainId, domains.id))
+      .leftJoin(hostsystems, eq(subdomains.hostsystemId, hostsystems.id))
+      .where(eq(subdomains.id, subdomainId))
+      .limit(1);
+    
+    if (subdomainResult.length === 0) {
+      return c.json({ error: 'Subdomain not found' }, 404);
+    }
+    
+    const { subdomain, domain, hostsystem } = subdomainResult[0];
+    
     if (!domain.bunnyId) {
       return c.json({ error: 'Domain is not linked to Bunny CDN' }, 400);
     }
     
-    if (!subdomain.ipv4 && !subdomain.ipv6) {
+    // IP fallback logic: Use hostsystem IPs if available, otherwise fall back to subdomain IPs
+    const effectiveIpv4 = hostsystem?.ipv4 || subdomain.ipv4;
+    const effectiveIpv6 = hostsystem?.ipv6 || subdomain.ipv6;
+    
+    if (!effectiveIpv4 && !effectiveIpv6) {
       return c.json({ error: 'No IP addresses configured for this subdomain' }, 400);
     }
     
@@ -990,7 +1127,7 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
     const updateData: any = {};
     
     // Handle IPv4 record
-    if (subdomain.ipv4) {
+    if (effectiveIpv4) {
       if (subdomain.ipv4RecordId) {
         // Update existing A record
         try {
@@ -1005,7 +1142,7 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
             body: JSON.stringify({
               Type: 0, // A record
               Ttl: 120,
-              Value: subdomain.ipv4,
+              Value: effectiveIpv4,
               Id: subdomain.ipv4RecordId,
               Name: subdomain.content
             })
@@ -1032,7 +1169,7 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
             body: JSON.stringify({
               Type: 0, // A record
               Ttl: 120,
-              Value: subdomain.ipv4,
+              Value: effectiveIpv4,
               Name: subdomain.content
             })
           });
@@ -1051,7 +1188,7 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
     }
     
     // Handle IPv6 record
-    if (subdomain.ipv6) {
+    if (effectiveIpv6) {
       if (subdomain.ipv6RecordId) {
         // Update existing AAAA record
         try {
@@ -1066,7 +1203,7 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
             body: JSON.stringify({
               Type: 1, // AAAA record
               Ttl: 120,
-              Value: subdomain.ipv6,
+              Value: effectiveIpv6,
               Id: subdomain.ipv6RecordId,
               Name: subdomain.content
             })
@@ -1093,7 +1230,7 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
             body: JSON.stringify({
               Type: 1, // AAAA record
               Ttl: 120,
-              Value: subdomain.ipv6,
+              Value: effectiveIpv6,
               Name: subdomain.content
             })
           });
@@ -1123,6 +1260,373 @@ app.post('/api/admin/subdomains/:id/sync-dns', adminMiddleware, async (c) => {
   } catch (error) {
     console.error('Error syncing DNS records:', error);
     return c.json({ error: 'Failed to sync DNS records' }, 500);
+  }
+});
+
+// Hostsystem CRUD endpoints (Admin only)
+app.get('/api/admin/hostsystems', adminMiddleware, async (c) => {
+  try {
+    // Get pagination and search parameters
+    const page = Math.max(1, parseInt(c.req.query('page') || '1'));
+    const limit = Math.min(Math.max(1, parseInt(c.req.query('limit') || '10')), 100);
+    const search = c.req.query('search') || '';
+    const sortBy = c.req.query('sortBy') || 'createdAt';
+    const sortOrder = c.req.query('sortOrder') || 'desc';
+    
+    const offset = (page - 1) * limit;
+    
+    // Validate sort column
+    const validSortColumns = ['id', 'location', 'enabled', 'createdAt', 'updatedAt'];
+    const safeSortBy = validSortColumns.includes(sortBy) ? sortBy : 'createdAt';
+    
+    // Build search conditions
+    let whereConditions;
+    if (search) {
+      whereConditions = or(
+        like(hostsystems.hostname, `%${search}%`),
+        like(hostsystems.location, `%${search}%`),
+        like(hostsystems.ipv4, `%${search}%`),
+        like(hostsystems.ipv6, `%${search}%`)
+      );
+    }
+    
+    // Get total count for pagination
+    const totalCountResult = await db
+      .select({ count: count() })
+      .from(hostsystems)
+      .where(whereConditions);
+    
+    const totalHostsystems = totalCountResult[0].count;
+    const totalPages = Math.ceil(totalHostsystems / limit);
+    
+    // Get hostsystems with pagination and sorting
+    const sortColumn = hostsystems[safeSortBy as keyof typeof hostsystems];
+    const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+    
+    const hostsystemList = await db
+      .select()
+      .from(hostsystems)
+      .where(whereConditions)
+      .orderBy(orderBy)
+      .limit(limit)
+      .offset(offset);
+    
+    return c.json({
+      hostsystems: hostsystemList,
+      pagination: {
+        page,
+        limit,
+        totalHostsystems,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+      search,
+      sortBy: safeSortBy,
+      sortOrder,
+    });
+  } catch (error) {
+    console.error('Error fetching hostsystems:', error);
+    return c.json({ error: 'Failed to fetch hostsystems' }, 500);
+  }
+});
+
+app.post('/api/admin/hostsystems', adminMiddleware, async (c) => {
+  try {
+    const body = await c.req.json();
+    
+    // Validate required fields
+    if (!body.accessToken || typeof body.accessToken !== 'string' || body.accessToken.trim() === '') {
+      return c.json({ error: 'Access token is required' }, 400);
+    }
+    
+    if (!body.hostname || typeof body.hostname !== 'string' || body.hostname.trim() === '') {
+      return c.json({ error: 'Hostname is required' }, 400);
+    }
+    
+    // Validate hostname format (domain/subdomain)
+    const hostnameRegex = /^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+    if (!hostnameRegex.test(body.hostname.trim())) {
+      return c.json({ error: 'Invalid hostname format. Must be a valid domain or subdomain (e.g., host.example.com)' }, 400);
+    }
+    
+    if (!body.location || typeof body.location !== 'string' || body.location.trim() === '') {
+      return c.json({ error: 'Location is required' }, 400);
+    }
+    
+    // Validate IP addresses if provided
+    if (body.ipv4 && typeof body.ipv4 === 'string') {
+      const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+      if (!ipv4Regex.test(body.ipv4)) {
+        return c.json({ error: 'Invalid IPv4 address format' }, 400);
+      }
+    }
+    
+    if (body.ipv6 && typeof body.ipv6 === 'string') {
+      const ipv6Regex = /^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$/;
+      if (!ipv6Regex.test(body.ipv6)) {
+        return c.json({ error: 'Invalid IPv6 address format' }, 400);
+      }
+    }
+    
+    // Validate numeric fields if provided
+    if (body.ram !== undefined && body.ram !== null && body.ram !== '') {
+      const ram = parseInt(body.ram);
+      if (isNaN(ram) || ram < 1) {
+        return c.json({ error: 'RAM must be a positive integer (MB)' }, 400);
+      }
+      body.ram = ram;
+    } else {
+      body.ram = null;
+    }
+    
+    if (body.cpus !== undefined && body.cpus !== null && body.cpus !== '') {
+      const cpus = parseInt(body.cpus);
+      if (isNaN(cpus) || cpus < 1) {
+        return c.json({ error: 'CPUs must be a positive integer' }, 400);
+      }
+      body.cpus = cpus;
+    } else {
+      body.cpus = null;
+    }
+    
+    if (body.storage !== undefined && body.storage !== null && body.storage !== '') {
+      const storage = parseInt(body.storage);
+      if (isNaN(storage) || storage < 1) {
+        return c.json({ error: 'Storage must be a positive integer (GB)' }, 400);
+      }
+      body.storage = storage;
+    } else {
+      body.storage = null;
+    }
+    
+    if (body.maxServers !== undefined && body.maxServers !== null && body.maxServers !== '') {
+      const maxServers = parseInt(body.maxServers);
+      if (isNaN(maxServers) || maxServers < 1) {
+        return c.json({ error: 'Max servers must be a positive integer' }, 400);
+      }
+      body.maxServers = maxServers;
+    } else {
+      body.maxServers = 100; // Default value
+    }
+    
+    // Create hostsystem
+    const [newHostsystem] = await db.insert(hostsystems).values({
+      accessToken: body.accessToken.trim(),
+      hostname: body.hostname.trim(),
+      ipv4: body.ipv4?.trim() || null,
+      ipv6: body.ipv6?.trim() || null,
+      location: body.location.trim(),
+      ram: body.ram,
+      cpus: body.cpus,
+      storage: body.storage,
+      maxServers: body.maxServers,
+      enabled: body.enabled !== undefined ? body.enabled : true,
+    });
+    
+    // Fetch the created hostsystem
+    const createdHostsystem = await db
+      .select()
+      .from(hostsystems)
+      .where(eq(hostsystems.id, newHostsystem.insertId))
+      .limit(1);
+    
+    return c.json({ hostsystem: createdHostsystem[0] }, 201);
+  } catch (error) {
+    console.error('Error creating hostsystem:', error);
+    return c.json({ error: 'Failed to create hostsystem' }, 500);
+  }
+});
+
+app.put('/api/admin/hostsystems/:id', adminMiddleware, async (c) => {
+  try {
+    const hostsystemId = parseInt(c.req.param('id'));
+    const body = await c.req.json();
+    
+    if (isNaN(hostsystemId)) {
+      return c.json({ error: 'Invalid hostsystem ID' }, 400);
+    }
+    
+    // Check if hostsystem exists
+    const existingHostsystem = await db
+      .select()
+      .from(hostsystems)
+      .where(eq(hostsystems.id, hostsystemId))
+      .limit(1);
+    
+    if (existingHostsystem.length === 0) {
+      return c.json({ error: 'Hostsystem not found' }, 404);
+    }
+    
+    const updateData: any = {};
+    
+    // Validate and update access token if provided
+    if (body.accessToken !== undefined) {
+      if (!body.accessToken || typeof body.accessToken !== 'string' || body.accessToken.trim() === '') {
+        return c.json({ error: 'Access token cannot be empty' }, 400);
+      }
+      updateData.accessToken = body.accessToken.trim();
+    }
+    
+    // Validate and update hostname if provided
+    if (body.hostname !== undefined) {
+      if (!body.hostname || typeof body.hostname !== 'string' || body.hostname.trim() === '') {
+        return c.json({ error: 'Hostname cannot be empty' }, 400);
+      }
+      
+      // Validate hostname format (domain/subdomain)
+      const hostnameRegex = /^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+      if (!hostnameRegex.test(body.hostname.trim())) {
+        return c.json({ error: 'Invalid hostname format. Must be a valid domain or subdomain (e.g., host.example.com)' }, 400);
+      }
+      updateData.hostname = body.hostname.trim();
+    }
+    
+    // Validate and update location if provided
+    if (body.location !== undefined) {
+      if (!body.location || typeof body.location !== 'string' || body.location.trim() === '') {
+        return c.json({ error: 'Location cannot be empty' }, 400);
+      }
+      updateData.location = body.location.trim();
+    }
+    
+    // Validate and update IP addresses if provided
+    if (body.ipv4 !== undefined) {
+      if (body.ipv4 && typeof body.ipv4 === 'string') {
+        const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+        if (!ipv4Regex.test(body.ipv4)) {
+          return c.json({ error: 'Invalid IPv4 address format' }, 400);
+        }
+        updateData.ipv4 = body.ipv4;
+      } else {
+        updateData.ipv4 = null;
+      }
+    }
+    
+    if (body.ipv6 !== undefined) {
+      if (body.ipv6 && typeof body.ipv6 === 'string') {
+        const ipv6Regex = /^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$/;
+        if (!ipv6Regex.test(body.ipv6)) {
+          return c.json({ error: 'Invalid IPv6 address format' }, 400);
+        }
+        updateData.ipv6 = body.ipv6;
+      } else {
+        updateData.ipv6 = null;
+      }
+    }
+    
+    // Validate and update numeric fields if provided
+    if (body.ram !== undefined) {
+      if (body.ram !== null && body.ram !== '' && body.ram !== undefined) {
+        const ram = parseInt(body.ram);
+        if (isNaN(ram) || ram < 1) {
+          return c.json({ error: 'RAM must be a positive integer (MB)' }, 400);
+        }
+        updateData.ram = ram;
+      } else {
+        updateData.ram = null;
+      }
+    }
+    
+    if (body.cpus !== undefined) {
+      if (body.cpus !== null && body.cpus !== '' && body.cpus !== undefined) {
+        const cpus = parseInt(body.cpus);
+        if (isNaN(cpus) || cpus < 1) {
+          return c.json({ error: 'CPUs must be a positive integer' }, 400);
+        }
+        updateData.cpus = cpus;
+      } else {
+        updateData.cpus = null;
+      }
+    }
+    
+    if (body.storage !== undefined) {
+      if (body.storage !== null && body.storage !== '' && body.storage !== undefined) {
+        const storage = parseInt(body.storage);
+        if (isNaN(storage) || storage < 1) {
+          return c.json({ error: 'Storage must be a positive integer (GB)' }, 400);
+        }
+        updateData.storage = storage;
+      } else {
+        updateData.storage = null;
+      }
+    }
+    
+    if (body.maxServers !== undefined) {
+      if (body.maxServers !== null && body.maxServers !== '' && body.maxServers !== undefined) {
+        const maxServers = parseInt(body.maxServers);
+        if (isNaN(maxServers) || maxServers < 1) {
+          return c.json({ error: 'Max servers must be a positive integer' }, 400);
+        }
+        updateData.maxServers = maxServers;
+      } else {
+        updateData.maxServers = 100; // Reset to default
+      }
+    }
+    
+    // Validate and update enabled status if provided
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== 'boolean') {
+        return c.json({ error: 'Enabled must be a boolean value' }, 400);
+      }
+      updateData.enabled = body.enabled;
+    }
+    
+    if (Object.keys(updateData).length === 0) {
+      return c.json({ error: 'No valid fields to update' }, 400);
+    }
+    
+    // Update hostsystem
+    await db
+      .update(hostsystems)
+      .set(updateData)
+      .where(eq(hostsystems.id, hostsystemId));
+    
+    // Fetch updated hostsystem
+    const updatedHostsystem = await db
+      .select()
+      .from(hostsystems)
+      .where(eq(hostsystems.id, hostsystemId))
+      .limit(1);
+    
+    return c.json({ hostsystem: updatedHostsystem[0] });
+  } catch (error) {
+    console.error('Error updating hostsystem:', error);
+    return c.json({ error: 'Failed to update hostsystem' }, 500);
+  }
+});
+
+app.delete('/api/admin/hostsystems/:id', adminMiddleware, async (c) => {
+  try {
+    const hostsystemId = parseInt(c.req.param('id'));
+    
+    if (isNaN(hostsystemId)) {
+      return c.json({ error: 'Invalid hostsystem ID' }, 400);
+    }
+    
+    // Check if hostsystem exists
+    const existingHostsystem = await db
+      .select()
+      .from(hostsystems)
+      .where(eq(hostsystems.id, hostsystemId))
+      .limit(1);
+    
+    if (existingHostsystem.length === 0) {
+      return c.json({ error: 'Hostsystem not found' }, 404);
+    }
+    
+    // Check if hostsystem is enabled
+    if (existingHostsystem[0].enabled) {
+      return c.json({ error: 'Cannot delete enabled hostsystems. Please disable the hostsystem first.' }, 400);
+    }
+    
+    // Delete hostsystem
+    await db.delete(hostsystems).where(eq(hostsystems.id, hostsystemId));
+    
+    return c.json({ message: 'Hostsystem deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting hostsystem:', error);
+    return c.json({ error: 'Failed to delete hostsystem' }, 500);
   }
 });
 
@@ -1354,30 +1858,544 @@ app.get('/api/servers', authMiddleware, async (c) => {
   try {
     const userId = c.get('userId');
 
-    const userServers = await db.select().from(servers).where(eq(servers.userId, userId));
+    const userServers = await db
+      .select({
+        server: servers,
+        hostsystem: hostsystems,
+        subdomain: subdomains
+      })
+      .from(servers)
+      .leftJoin(hostsystems, eq(servers.hostsystemId, hostsystems.id))
+      .leftJoin(subdomains, eq(servers.subdomainId, subdomains.id))
+      .where(eq(servers.userId, userId));
     
     // Transform data to match frontend expectations
-    const transformedServers = userServers.map(server => ({
-      id: server.id,
-      name: `${server.subdomain}.${server.host}`,
-      status: server.status === 'running' ? 'Online' : 
-              server.status === 'stopped' ? 'Offline' : 
-              server.status === 'starting' ? 'Loading' : 'Offline',
-      cpu: server.cpuCores,
-      ram: `${server.ram}MB`,
-      storage: `${server.storage}GB`,
-      subdomain: server.subdomain,
-      host: server.host,
-      serverVersion: server.serverVersion,
-      minecraftVersion: server.minecraftVersion,
-      createdAt: server.createdAt,
-      lastActiveAt: server.lastActiveAt
+    const transformedServers = userServers.map(item => ({
+      id: item.server.id,
+      name: `${item.server.subdomain}.${item.server.host}`,
+      status: item.server.status === 'running' ? 'Online' : 
+              item.server.status === 'stopped' ? 'Offline' : 
+              item.server.status === 'starting' ? 'Loading' : 'Offline',
+      cpu: item.server.cpuCores,
+      ram: `${item.server.ram}MB`,
+      storage: `${item.server.storage}GB`,
+      subdomain: item.server.subdomain,
+      host: item.server.host,
+      serverVersion: item.server.serverVersion,
+      minecraftVersion: item.server.minecraftVersion,
+      createdAt: item.server.createdAt,
+      lastActiveAt: item.server.lastActiveAt,
+      hostsystem: item.hostsystem,
+      assignedSubdomain: item.subdomain
     }));
 
     return c.json({ servers: transformedServers });
   } catch (error) {
     console.error('Error fetching servers:', error);
     return c.json({ error: 'Failed to fetch servers' }, 500);
+  }
+});
+
+// Admin Server Management endpoints
+app.get('/api/admin/servers', adminMiddleware, async (c) => {
+  try {
+    // Get pagination and search parameters
+    const page = Math.max(1, parseInt(c.req.query('page') || '1'));
+    const limit = Math.min(Math.max(1, parseInt(c.req.query('limit') || '10')), 100);
+    const search = c.req.query('search') || '';
+    const sortBy = c.req.query('sortBy') || 'createdAt';
+    const sortOrder = c.req.query('sortOrder') || 'desc';
+    
+    const offset = (page - 1) * limit;
+    
+    // Validate sort column
+    const validSortColumns = ['name', 'status', 'createdAt', 'updatedAt'];
+    const safeSortBy = validSortColumns.includes(sortBy) ? sortBy : 'createdAt';
+    
+    // Build search conditions
+    let whereConditions;
+    if (search) {
+      whereConditions = or(
+        like(servers.name, `%${search}%`),
+        like(servers.subdomain, `%${search}%`),
+        like(servers.host, `%${search}%`)
+      );
+    }
+    
+    // Get total count for pagination
+    const totalCountResult = await db
+      .select({ count: count() })
+      .from(servers)
+      .where(whereConditions);
+    
+    const totalServers = totalCountResult[0].count;
+    const totalPages = Math.ceil(totalServers / limit);
+    
+    // Get servers with pagination and sorting
+    const sortColumn = servers[safeSortBy as keyof typeof servers];
+    const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+    
+    const serverList = await db
+      .select({
+        server: servers,
+        user: users,
+        hostsystem: hostsystems,
+        subdomain: subdomains
+      })
+      .from(servers)
+      .leftJoin(users, eq(servers.userId, users.id))
+      .leftJoin(hostsystems, eq(servers.hostsystemId, hostsystems.id))
+      .leftJoin(subdomains, eq(servers.subdomainId, subdomains.id))
+      .where(whereConditions)
+      .orderBy(orderBy)
+      .limit(limit)
+      .offset(offset);
+    
+    return c.json({
+      servers: serverList,
+      pagination: {
+        page,
+        limit,
+        totalServers,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+      search,
+      sortBy: safeSortBy,
+      sortOrder,
+    });
+  } catch (error) {
+    console.error('Error fetching servers:', error);
+    return c.json({ error: 'Failed to fetch servers' }, 500);
+  }
+});
+
+app.post('/api/admin/servers', adminMiddleware, async (c) => {
+  try {
+    const body = await c.req.json();
+    
+    // Validate required fields
+    if (!body.name || typeof body.name !== 'string' || body.name.trim() === '') {
+      return c.json({ error: 'Server name is required' }, 400);
+    }
+    
+    if (!body.subdomain || typeof body.subdomain !== 'string' || body.subdomain.trim() === '') {
+      return c.json({ error: 'Subdomain is required' }, 400);
+    }
+    
+    if (!body.host || typeof body.host !== 'string' || body.host.trim() === '') {
+      return c.json({ error: 'Host is required' }, 400);
+    }
+    
+    if (!body.userId || !Number.isInteger(body.userId) || body.userId < 1) {
+      return c.json({ error: 'Valid user ID is required' }, 400);
+    }
+    
+    // Validate numeric fields
+    if (!body.ram || !Number.isInteger(body.ram) || body.ram < 1) {
+      return c.json({ error: 'RAM must be a positive integer (MB)' }, 400);
+    }
+    
+    if (!body.storage || !Number.isInteger(body.storage) || body.storage < 1) {
+      return c.json({ error: 'Storage must be a positive integer (GB)' }, 400);
+    }
+    
+    if (!body.cpuCores || !Number.isInteger(body.cpuCores) || body.cpuCores < 1) {
+      return c.json({ error: 'CPU cores must be a positive integer' }, 400);
+    }
+    
+    // Validate optional hostsystem and subdomain references
+    if (body.hostsystemId && (!Number.isInteger(body.hostsystemId) || body.hostsystemId < 1)) {
+      return c.json({ error: 'Invalid hostsystem ID' }, 400);
+    }
+    
+    if (body.subdomainId && (!Number.isInteger(body.subdomainId) || body.subdomainId < 1)) {
+      return c.json({ error: 'Invalid subdomain ID' }, 400);
+    }
+    
+    // Check if user exists
+    const user = await db.select().from(users).where(eq(users.id, body.userId)).limit(1);
+    if (user.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    // Check if hostsystem exists (if provided)
+    if (body.hostsystemId) {
+      const hostsystem = await db.select().from(hostsystems).where(eq(hostsystems.id, body.hostsystemId)).limit(1);
+      if (hostsystem.length === 0) {
+        return c.json({ error: 'Hostsystem not found' }, 404);
+      }
+    }
+    
+    // Check if subdomain exists (if provided)
+    if (body.subdomainId) {
+      const subdomain = await db.select().from(subdomains).where(eq(subdomains.id, body.subdomainId)).limit(1);
+      if (subdomain.length === 0) {
+        return c.json({ error: 'Subdomain not found' }, 404);
+      }
+    }
+    
+    // Check if subdomain is unique
+    const existingServer = await db.select().from(servers).where(eq(servers.subdomain, body.subdomain.trim())).limit(1);
+    if (existingServer.length > 0) {
+      return c.json({ error: 'Subdomain already exists' }, 409);
+    }
+    
+    // Create server
+    const [newServer] = await db.insert(servers).values({
+      name: body.name.trim(),
+      subdomain: body.subdomain.trim(),
+      host: body.host.trim(),
+      userId: body.userId,
+      ram: body.ram,
+      storage: body.storage,
+      cpuCores: body.cpuCores,
+      serverVersion: body.serverVersion || 'latest',
+      minecraftVersion: body.minecraftVersion || '1.20.1',
+      hostsystemId: body.hostsystemId || null,
+      subdomainId: body.subdomainId || null,
+      status: 'stopped'
+    });
+    
+    return c.json({ message: 'Server created successfully', id: newServer.insertId }, 201);
+  } catch (error) {
+    console.error('Error creating server:', error);
+    return c.json({ error: 'Failed to create server' }, 500);
+  }
+});
+
+app.put('/api/admin/servers/:id', adminMiddleware, async (c) => {
+  try {
+    const serverId = parseInt(c.req.param('id'));
+    const body = await c.req.json();
+    
+    if (isNaN(serverId)) {
+      return c.json({ error: 'Invalid server ID' }, 400);
+    }
+    
+    // Check if server exists
+    const existingServer = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
+    if (existingServer.length === 0) {
+      return c.json({ error: 'Server not found' }, 404);
+    }
+    
+    const updateData: any = {};
+    
+    // Validate and update fields
+    if (body.name !== undefined) {
+      if (!body.name || typeof body.name !== 'string' || body.name.trim() === '') {
+        return c.json({ error: 'Server name cannot be empty' }, 400);
+      }
+      updateData.name = body.name.trim();
+    }
+    
+    if (body.hostsystemId !== undefined) {
+      if (body.hostsystemId && (!Number.isInteger(body.hostsystemId) || body.hostsystemId < 1)) {
+        return c.json({ error: 'Invalid hostsystem ID' }, 400);
+      }
+      
+      if (body.hostsystemId) {
+        const hostsystem = await db.select().from(hostsystems).where(eq(hostsystems.id, body.hostsystemId)).limit(1);
+        if (hostsystem.length === 0) {
+          return c.json({ error: 'Hostsystem not found' }, 404);
+        }
+      }
+      
+      updateData.hostsystemId = body.hostsystemId || null;
+    }
+    
+    if (body.subdomainId !== undefined) {
+      if (body.subdomainId && (!Number.isInteger(body.subdomainId) || body.subdomainId < 1)) {
+        return c.json({ error: 'Invalid subdomain ID' }, 400);
+      }
+      
+      if (body.subdomainId) {
+        const subdomain = await db.select().from(subdomains).where(eq(subdomains.id, body.subdomainId)).limit(1);
+        if (subdomain.length === 0) {
+          return c.json({ error: 'Subdomain not found' }, 404);
+        }
+      }
+      
+      updateData.subdomainId = body.subdomainId || null;
+    }
+    
+    if (body.status !== undefined) {
+      const validStatuses = ['starting', 'running', 'stopping', 'stopped', 'error'];
+      if (!validStatuses.includes(body.status)) {
+        return c.json({ error: 'Invalid status' }, 400);
+      }
+      updateData.status = body.status;
+    }
+    
+    if (Object.keys(updateData).length === 0) {
+      return c.json({ error: 'No valid fields to update' }, 400);
+    }
+    
+    // Update server
+    await db.update(servers).set(updateData).where(eq(servers.id, serverId));
+    
+    return c.json({ message: 'Server updated successfully' });
+  } catch (error) {
+    console.error('Error updating server:', error);
+    return c.json({ error: 'Failed to update server' }, 500);
+  }
+});
+
+// Admin Server Management by User endpoints
+app.get('/api/admin/users/:userId/servers', adminMiddleware, async (c) => {
+  try {
+    const userId = parseInt(c.req.param('userId'));
+    
+    if (isNaN(userId)) {
+      return c.json({ error: 'Invalid user ID' }, 400);
+    }
+    
+    // Check if user exists
+    const user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (user.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    // Get pagination parameters
+    const page = Math.max(1, parseInt(c.req.query('page') || '1'));
+    const limit = Math.min(Math.max(1, parseInt(c.req.query('limit') || '10')), 100);
+    const search = c.req.query('search') || '';
+    const sortBy = c.req.query('sortBy') || 'createdAt';
+    const sortOrder = c.req.query('sortOrder') || 'desc';
+    
+    const offset = (page - 1) * limit;
+    
+    // Validate sort column
+    const validSortColumns = ['name', 'status', 'createdAt', 'updatedAt'];
+    const safeSortBy = validSortColumns.includes(sortBy) ? sortBy : 'createdAt';
+    
+    // Build search conditions
+    let whereConditions = eq(servers.userId, userId);
+    if (search) {
+      whereConditions = and(
+        whereConditions,
+        or(
+          like(servers.name, `%${search}%`),
+          like(servers.subdomain, `%${search}%`),
+          like(servers.host, `%${search}%`)
+        )
+      );
+    }
+    
+    // Get total count for pagination
+    const totalCountResult = await db
+      .select({ count: count() })
+      .from(servers)
+      .where(whereConditions);
+    
+    const totalServers = totalCountResult[0].count;
+    const totalPages = Math.ceil(totalServers / limit);
+    
+    // Get servers with pagination and sorting
+    const sortColumn = servers[safeSortBy as keyof typeof servers];
+    const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+    
+    const userServers = await db
+      .select({
+        server: servers,
+        hostsystem: hostsystems,
+        subdomain: subdomains
+      })
+      .from(servers)
+      .leftJoin(hostsystems, eq(servers.hostsystemId, hostsystems.id))
+      .leftJoin(subdomains, eq(servers.subdomainId, subdomains.id))
+      .where(whereConditions)
+      .orderBy(orderBy)
+      .limit(limit)
+      .offset(offset);
+    
+    return c.json({
+      user: user[0],
+      servers: userServers,
+      pagination: {
+        page,
+        limit,
+        totalServers,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+      search,
+      sortBy: safeSortBy,
+      sortOrder,
+    });
+  } catch (error) {
+    console.error('Error fetching user servers:', error);
+    return c.json({ error: 'Failed to fetch user servers' }, 500);
+  }
+});
+
+app.post('/api/admin/users/:userId/servers', adminMiddleware, async (c) => {
+  try {
+    const userId = parseInt(c.req.param('userId'));
+    const body = await c.req.json();
+    
+    if (isNaN(userId)) {
+      return c.json({ error: 'Invalid user ID' }, 400);
+    }
+    
+    // Check if user exists
+    const user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (user.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    // Validate required fields
+    if (!body.name || typeof body.name !== 'string' || body.name.trim() === '') {
+      return c.json({ error: 'Server name is required' }, 400);
+    }
+    
+    if (!body.subdomain || typeof body.subdomain !== 'string' || body.subdomain.trim() === '') {
+      return c.json({ error: 'Subdomain is required' }, 400);
+    }
+    
+    if (!body.host || typeof body.host !== 'string' || body.host.trim() === '') {
+      return c.json({ error: 'Host is required' }, 400);
+    }
+    
+    // Validate numeric fields
+    if (!body.ram || !Number.isInteger(body.ram) || body.ram < 1) {
+      return c.json({ error: 'RAM must be a positive integer (MB)' }, 400);
+    }
+    
+    if (!body.storage || !Number.isInteger(body.storage) || body.storage < 1) {
+      return c.json({ error: 'Storage must be a positive integer (GB)' }, 400);
+    }
+    
+    if (!body.cpuCores || !Number.isInteger(body.cpuCores) || body.cpuCores < 1) {
+      return c.json({ error: 'CPU cores must be a positive integer' }, 400);
+    }
+    
+    // Validate optional hostsystem and subdomain references
+    if (body.hostsystemId && (!Number.isInteger(body.hostsystemId) || body.hostsystemId < 1)) {
+      return c.json({ error: 'Invalid hostsystem ID' }, 400);
+    }
+    
+    if (body.subdomainId && (!Number.isInteger(body.subdomainId) || body.subdomainId < 1)) {
+      return c.json({ error: 'Invalid subdomain ID' }, 400);
+    }
+    
+    // Check if hostsystem exists (if provided)
+    if (body.hostsystemId) {
+      const hostsystem = await db.select().from(hostsystems).where(eq(hostsystems.id, body.hostsystemId)).limit(1);
+      if (hostsystem.length === 0) {
+        return c.json({ error: 'Hostsystem not found' }, 404);
+      }
+    }
+    
+    // Check if subdomain exists (if provided)
+    if (body.subdomainId) {
+      const subdomain = await db.select().from(subdomains).where(eq(subdomains.id, body.subdomainId)).limit(1);
+      if (subdomain.length === 0) {
+        return c.json({ error: 'Subdomain not found' }, 404);
+      }
+    }
+    
+    // Check if subdomain is unique
+    const existingServer = await db.select().from(servers).where(eq(servers.subdomain, body.subdomain.trim())).limit(1);
+    if (existingServer.length > 0) {
+      return c.json({ error: 'Subdomain already exists' }, 409);
+    }
+    
+    // Create server for the specific user
+    const [newServer] = await db.insert(servers).values({
+      name: body.name.trim(),
+      subdomain: body.subdomain.trim(),
+      host: body.host.trim(),
+      userId: userId, // Use the user from the URL parameter
+      ram: body.ram,
+      storage: body.storage,
+      cpuCores: body.cpuCores,
+      serverVersion: body.serverVersion || 'latest',
+      minecraftVersion: body.minecraftVersion || '1.20.1',
+      hostsystemId: body.hostsystemId || null,
+      subdomainId: body.subdomainId || null,
+      status: 'stopped'
+    });
+    
+    return c.json({ message: 'Server created successfully for user', id: newServer.insertId }, 201);
+  } catch (error) {
+    console.error('Error creating server for user:', error);
+    return c.json({ error: 'Failed to create server' }, 500);
+  }
+});
+
+app.delete('/api/admin/users/:userId/servers/:serverId', adminMiddleware, async (c) => {
+  try {
+    const userId = parseInt(c.req.param('userId'));
+    const serverId = parseInt(c.req.param('serverId'));
+    
+    if (isNaN(userId) || isNaN(serverId)) {
+      return c.json({ error: 'Invalid user ID or server ID' }, 400);
+    }
+    
+    // Check if server exists and belongs to the user
+    const server = await db
+      .select()
+      .from(servers)
+      .where(and(eq(servers.id, serverId), eq(servers.userId, userId)))
+      .limit(1);
+    
+    if (server.length === 0) {
+      return c.json({ error: 'Server not found or does not belong to this user' }, 404);
+    }
+    
+    // Check if server is stopped
+    if (server[0].status !== 'stopped') {
+      return c.json({ error: 'Cannot delete running servers. Please stop the server first.' }, 400);
+    }
+    
+    // Delete server
+    await db.delete(servers).where(and(eq(servers.id, serverId), eq(servers.userId, userId)));
+    
+    return c.json({ message: 'Server deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting server:', error);
+    return c.json({ error: 'Failed to delete server' }, 500);
+  }
+});
+
+// Get available hostsystems and subdomains for server creation
+app.get('/api/admin/server-resources', adminMiddleware, async (c) => {
+  try {
+    const [hostsystemsResponse, domainsResponse] = await Promise.all([
+      db.select().from(hostsystems).where(eq(hostsystems.enabled, true)),
+      db.select().from(domains).where(eq(domains.enabled, 'enabled'))
+    ]);
+    
+    // Get all subdomains from all domains
+    const allSubdomains = [];
+    for (const domain of domainsResponse) {
+      try {
+        const domainSubdomains = await db
+          .select()
+          .from(subdomains)
+          .where(and(eq(subdomains.domainId, domain.id), eq(subdomains.enabled, true)));
+        
+        allSubdomains.push(...domainSubdomains.map(sub => ({
+          ...sub,
+          domainName: domain.name,
+          fullDomain: sub.content
+        })));
+      } catch (err) {
+        console.error(`Error loading subdomains for domain ${domain.id}:`, err);
+      }
+    }
+    
+    return c.json({
+      hostsystems: hostsystemsResponse,
+      subdomains: allSubdomains,
+      domains: domainsResponse
+    });
+  } catch (error) {
+    console.error('Error fetching server resources:', error);
+    return c.json({ error: 'Failed to fetch server resources' }, 500);
   }
 });
 
